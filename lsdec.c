@@ -9,6 +9,8 @@
 #define LSD_MAX_SCRIPTS 50
 #define LSD_INDENT_STR "  "
 
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+
 typedef struct {
 	u32 start; // Start rom offset
 	u32 end; // End rom offset
@@ -21,7 +23,7 @@ typedef struct lsd_ctx {
 	u32 offset; // Pointer to lvs start
 	char* output_buf;
 	u32 output_buf_idx;
-	int output_buf_size;
+	u32 output_buf_size;
 	int output_indent;
 	lsd_script scripts[LSD_MAX_SCRIPTS]; // list of addresses collected from 00 and 01 commands
 	int scripts_idx;
@@ -371,6 +373,8 @@ lsd_ctx* lsd_create_ctx(u8* rom)
 	ctx->rom = rom;
 	ctx->output_buf_size = 4096;
 	ctx->output_buf = malloc(4096);
+	
+	return ctx;
 }
 
 void lsd_destroy_ctx(lsd_ctx* ctx)
@@ -391,8 +395,6 @@ void lsd_config_unset(lsd_ctx* ctx, u32 cfg_mask)
 
 int lsd_add_script(lsd_ctx* ctx, u32 start_offset, u32 end_offset)
 {
-	lsd_script script;
-	
 	for(int i = 0; i < ctx->scripts_idx; i++)
 	{
 		if(ctx->scripts[i].start == start_offset)
@@ -401,6 +403,8 @@ int lsd_add_script(lsd_ctx* ctx, u32 start_offset, u32 end_offset)
 		}
 	}
 	
+	lsd_script script;
+	
 	script.start = start_offset;
 	script.end = end_offset;
 	script.b_decoded = 0;
@@ -408,7 +412,10 @@ int lsd_add_script(lsd_ctx* ctx, u32 start_offset, u32 end_offset)
 	if(ctx->scripts_idx < LSD_MAX_SCRIPTS)
 	{
 		ctx->scripts[ctx->scripts_idx++] = script;
+		return 1;
 	}
+	
+	return 0;
 }
 
 // Return count of pending scripts
@@ -440,8 +447,11 @@ void lsd_decode_next(lsd_ctx* ctx)
 			{
 				printf("Decoding range %08X : %08X\n\n", script.start, script.end);
 			}
+			
 			lsd_decode_range(ctx, script.start, script.end);
 			ctx->scripts[i].b_decoded = 1;
+			
+			break;
 		}
 	}
 }
@@ -547,7 +557,7 @@ static void lsd_dec_unhandled(lsd_ctx* ctx)
 		}
 	}
 	
-	lsd_printf(ctx, " ; Unhandled command\n");
+	lsd_printf(ctx, " ; Unhandled command");
 }
 
 static void lsd_collect_jump(lsd_ctx* ctx)
@@ -578,7 +588,7 @@ static void lsd_decode_range(lsd_ctx* ctx, u32 offset_start, u32 offset_end)
 		
 		if(command->indent == LSD_TAB_CLOSE)
 		{
-			//lsd_adjust_indent(ctx, -1); this crashes?
+			lsd_adjust_indent(ctx, -1); //this crashes?
 		}
 		
 		if(command != NULL)
@@ -600,7 +610,7 @@ static void lsd_decode_range(lsd_ctx* ctx, u32 offset_start, u32 offset_end)
 		
 		if(command->indent == LSD_TAB_OPEN)
 		{
-			//lsd_adjust_indent(ctx, 1); this crashes?
+			lsd_adjust_indent(ctx, 1); //this crashes?
 		}
 		
 		if(cmd_byte == 0x00 || cmd_byte == 0x01)
@@ -610,8 +620,6 @@ static void lsd_decode_range(lsd_ctx* ctx, u32 offset_start, u32 offset_end)
 		
 		ctx->offset += len_byte;
 	}
-	
-	printf("\n");
 }
 
 ////////// Lookup implementations
@@ -666,7 +674,7 @@ static int lsd_printf(lsd_ctx* ctx, const char* fmt, ...)
 	va_list valist;
 	va_start(valist, fmt);
 
-	int len = vsnprintf(NULL, 0, fmt, valist);
+	u32 len = vsnprintf(NULL, 0, fmt, valist);
 	
 	if(ctx->config & LSD_CFG_VERBOSE)
 	{
@@ -697,23 +705,10 @@ static void lsd_print_indent(lsd_ctx* ctx)
 
 static void lsd_adjust_indent(lsd_ctx* ctx, int tabs)
 {
-	printf("[adjusting indent]\n");
-	//ctx->output_indent += tabs;
+	ctx->output_indent += tabs;
 	
-	//if(ctx->output_indent < 0)
-	//{
-	//	ctx->output_indent = 0;
-	//}
-}
-
-static void lsd_print_padded_string(lsd_ctx* ctx, char* s, int padded_length)
-{
-	int len = lsd_printf(ctx, "%s", s);
-	
-	len = padded_length - len;
-	
-	for(int i = 0; i < len; i++)
+	if(ctx->output_indent < 0)
 	{
-		lsd_printf(ctx, " ");
+		ctx->output_indent = 0;
 	}
 }
