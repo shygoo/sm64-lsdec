@@ -1,0 +1,1 @@
+Decodes level scripts from Super Mario 64
