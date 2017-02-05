@@ -53,9 +53,10 @@ int main(int argc, const char* argv[])
 	}
 	
 	lsd_ctx* lsd = lsd_create_ctx(rom);
-	lsd_add_script(lsd, 0x108A10, 0x108A38);
-	
 	//lsd_config_set(lsd, LSD_CFG_VERBOSE);
+	lsd_config_set(lsd, LSD_CFG_TABULATE_ARGS | LSD_CFG_INDENT_BLOCKS);
+	
+	lsd_add_script(lsd, 0x108A10, 0x108A38);
 	
 	int levelno = 0;
 	

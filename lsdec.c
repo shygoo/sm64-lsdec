@@ -457,11 +457,6 @@ void lsd_decode_next(lsd_ctx* ctx)
 		{
 			lsd_script script = ctx->scripts[i];
 			
-			if(ctx->config & LSD_CFG_VERBOSE)
-			{
-				printf("Decoding range %08X : %08X\n\n", script.start, script.end);
-			}
-			
 			lsd_decode_range(ctx, script.start, script.end);
 			ctx->scripts[i].b_decoded = 1;
 			
@@ -644,8 +639,10 @@ static void lsd_decode_range(lsd_ctx* ctx, uint32_t offset_start, uint32_t offse
 			lsd_adjust_indent(ctx, -1); //this crashes?
 		}
 		
+		const char* name_fmt = (ctx->config & LSD_CFG_TABULATE_ARGS) ? "%-20s " : "%s ";
+		
 		lsd_print_indent(ctx);
-		lsd_printf(ctx, "%-20s", command->name);
+		lsd_printf(ctx, name_fmt, command->name);
 		
 		if(command->args != NULL)
 		{
@@ -753,6 +750,11 @@ static void lsd_print_indent(lsd_ctx* ctx)
 
 static void lsd_adjust_indent(lsd_ctx* ctx, int tabs)
 {
+	if(!(ctx->config & LSD_CFG_INDENT_BLOCKS))
+	{
+		return;
+	}
+	
 	ctx->output_indent += tabs;
 	
 	if(ctx->output_indent < 0)
