@@ -1,36 +1,51 @@
+/*
+
+SM64 Level Script Decoder
+shygoo 2017
+License: MIT
+
+*/
+
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
 
-#include "util.h"
 #include "lsdec.h"
 
-#define LSD_MAX_SCRIPTS 50
-#define LSD_INDENT_STR "  "
+#define LSD_MAX_SCRIPTS  70
+#define LSD_INDENT_STR   "  "
+
+#define SWAP16(i) ((((i) & 0xFF) << 8) | (((i) & 0xFF00) >> 8))
+#define SWAP32(i) ((((i) & 0xFF000000) >> 24) | (((i) & 0xFF0000) >> 8) | (((i) & 0xFF00) << 8) | (((i) & 0xFF) << 24))
+#define U32BE(p) (SWAP32(*(uint32_t*)p))
+#define U16BE(p)  (SWAP16(*(uint16_t*)p))
 
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 
 typedef struct {
-	u32 start; // Start rom offset
-	u32 end; // End rom offset
+	uint32_t start; // Start rom offset
+	uint32_t end; // End rom offset
 	int b_decoded;
 } lsd_script;
 
 typedef struct lsd_ctx {
-	u32 config;
-	u8* rom;
-	u32 offset; // Pointer to lvs start
+	uint32_t config;
+	uint8_t* rom;
+	uint32_t offset; // Command pointer
+	uint32_t offset_start; // Level script pointer
+	uint32_t offset_end;
 	char* output_buf;
-	u32 output_buf_idx;
-	u32 output_buf_size;
+	uint32_t output_buf_idx;
+	uint32_t output_buf_size;
 	int output_indent;
 	lsd_script scripts[LSD_MAX_SCRIPTS]; // list of addresses collected from 00 and 01 commands
 	int scripts_idx;
 } lsd_ctx;
 
 typedef struct {
-	u32   value;
+	uint32_t   value;
 	char* name;
 } lsd_label;
 
@@ -41,44 +56,43 @@ enum lsd_argfmt {
 };
 
 typedef struct {
-	u32 rel_offset; // offset relative to command
+	uint32_t rel_offset; // offset relative to command
 	enum lsd_argfmt format;
 	lsd_label* label_set;
 } lsd_arg;
 
 enum lsd_indent {
-	LSD_TAB_NA  = 0,
-	LSD_TAB_OPEN = 1,
-	LSD_TAB_CLOSE = 2
+	LSD_TAB_NA = 0,
+	LSD_TAB_OPEN,
+	LSD_TAB_CLOSE
 };
 
 typedef struct {
-	u8 cmd_byte;
+	uint8_t cmd_byte;
 	const char* name;
 	lsd_arg* args;
 	enum lsd_indent indent;
 } lsd_command;
 
-static void lsd_decode_range(lsd_ctx* ctx, u32 offset_start, u32 offset_end);
+static void lsd_decode_range(lsd_ctx* ctx, uint32_t offset_start, uint32_t offset_end);
 
 static void lsd_dec_unhandled    (lsd_ctx* ctx);
 
 // Printing
 
-static int lsd_printf              (lsd_ctx* ctx, const char* fmt, ...);
 static void lsd_print_indent        (lsd_ctx* ctx);
 static void lsd_adjust_indent       (lsd_ctx* ctx, int tabs);
 
 // Lookups
 
-static lsd_command* command_lookup (u8 cmdbyte);
-static lsd_label*   label_lookup   (lsd_label* labelset, u32 value);
+static lsd_command* command_lookup (uint8_t cmdbyte);
+static lsd_label*   label_lookup   (lsd_label* labelset, uint32_t value);
 
 // Fetch data from ctx offset + rel_offset
 
-static u8  lsd_u8  (lsd_ctx* ctx, u32 rel_offset);
-static u16 lsd_u16 (lsd_ctx* ctx, u32 rel_offset);
-static u32 lsd_u32 (lsd_ctx* ctx, u32 rel_offset);
+static uint8_t  lsd_u8  (lsd_ctx* ctx, uint32_t rel_offset);
+static uint16_t lsd_u16 (lsd_ctx* ctx, uint32_t rel_offset);
+static uint32_t lsd_u32 (lsd_ctx* ctx, uint32_t rel_offset);
 
 ////// Lookup tables
 
@@ -102,7 +116,7 @@ lsd_label lbl_segments[] = {
 	{ 0x10, "SEG_10_LVL" },     // initial level script
 	{ 0x11, "SEG_11_UNK" },     // ?????? 0x4000 bytes allocated on startup
 	{ 0x12, "SEG_12_UNK" },     // ??????
-	{ 0x13, "SEG_13_BHV" },     // behavior scripts
+	{ 0x13, "SEG_13_BEH" },     // behavior scripts
 	{ 0x14, "SEG_14_LVL" },     // intro screens
 	{ 0x15, "SEG_15_LVL" },     // intro screens
 	{ 0x16, "SEG_16_GFX" },     // geo layouts
@@ -298,7 +312,7 @@ static lsd_arg args_music_b[] = {
 };
 
 static lsd_command cmd_list[] = {
-//   cmd, name, args, indentation
+	// cmd byte, name, args, indentation
 	{ 0x00, "run_script_a",      args_run_script },
 	{ 0x01, "run_script_b",      args_run_script },
 	{ 0x02, "end_script" },
@@ -365,7 +379,7 @@ static lsd_command cmd_list[] = {
 
 ////////// API
 
-lsd_ctx* lsd_create_ctx(u8* rom)
+lsd_ctx* lsd_create_ctx(uint8_t* rom)
 {
 	lsd_ctx* ctx = (lsd_ctx*) malloc(sizeof(lsd_ctx));
 	memset(ctx, 0x00, sizeof(lsd_ctx));
@@ -383,17 +397,17 @@ void lsd_destroy_ctx(lsd_ctx* ctx)
 	free(ctx);
 }
 
-void lsd_config_set(lsd_ctx* ctx, u32 cfg_mask)
+void lsd_config_set(lsd_ctx* ctx, uint32_t cfg_mask)
 {
 	ctx->config |= cfg_mask;
 }
 
-void lsd_config_unset(lsd_ctx* ctx, u32 cfg_mask)
+void lsd_config_unset(lsd_ctx* ctx, uint32_t cfg_mask)
 {
 	ctx->config &= ~cfg_mask;
 }
 
-int lsd_add_script(lsd_ctx* ctx, u32 start_offset, u32 end_offset)
+int lsd_add_script(lsd_ctx* ctx, uint32_t start_offset, uint32_t end_offset)
 {
 	for(int i = 0; i < ctx->scripts_idx; i++)
 	{
@@ -456,6 +470,37 @@ void lsd_decode_next(lsd_ctx* ctx)
 	}
 }
 
+const char* lsd_get_output(lsd_ctx* ctx)
+{
+	return ctx->output_buf;
+}
+
+void lsd_flush_output(lsd_ctx* ctx, char* path)
+{
+	FILE* file = fopen(path, "w");
+	
+	if(file == NULL)
+	{
+		printf("Error opening '%s' for ouput\n", path);
+		return;
+	}
+	
+	fputs(ctx->output_buf, file);
+	fclose(file);
+	
+	ctx->output_buf_idx = 0;
+}
+
+uint32_t lsd_get_offset_start(lsd_ctx* ctx)
+{
+	return ctx->offset_start;
+}
+
+uint32_t lsd_get_offset_end(lsd_ctx* ctx)
+{
+	return ctx->offset_end;
+}
+
 /////////////////////
 
 static void lsd_decode_args(lsd_ctx* ctx, lsd_arg* args)
@@ -464,7 +509,7 @@ static void lsd_decode_args(lsd_ctx* ctx, lsd_arg* args)
 	{
 		lsd_arg arg = args[i];
 		
-		u32 value;
+		uint32_t value;
 		
 		const char* fmt_str = NULL;
 		
@@ -543,7 +588,7 @@ static void lsd_decode_args(lsd_ctx* ctx, lsd_arg* args)
 
 static void lsd_dec_unhandled(lsd_ctx* ctx)
 {
-	u8 len_byte = lsd_u8(ctx, 1);
+	uint8_t len_byte = lsd_u8(ctx, 1);
 	
 	lsd_printf(ctx, ".db ");
 	
@@ -557,26 +602,28 @@ static void lsd_dec_unhandled(lsd_ctx* ctx)
 		}
 	}
 	
-	lsd_printf(ctx, " ; Unhandled command");
+	lsd_printf(ctx, " ; Unhandled command\n");
 }
 
 static void lsd_collect_jump(lsd_ctx* ctx)
 {
-	u32 start_offset = lsd_u32(ctx, 4);
-	u32 end_offset = lsd_u32(ctx, 8);
+	uint32_t start_offset = lsd_u32(ctx, 4);
+	uint32_t end_offset = lsd_u32(ctx, 8);
 	lsd_add_script(ctx, start_offset, end_offset);
 }
 
-static void lsd_decode_range(lsd_ctx* ctx, u32 offset_start, u32 offset_end)
+static void lsd_decode_range(lsd_ctx* ctx, uint32_t offset_start, uint32_t offset_end)
 {
 	ctx->output_indent = 0;
 
 	ctx->offset = offset_start;
+	ctx->offset_start = offset_start;
+	ctx->offset_end = offset_end;
 	
 	while(ctx->offset < offset_end)
 	{
-		u8 cmd_byte = lsd_u8(ctx, 0);
-		u8 len_byte = lsd_u8(ctx, 1);
+		uint8_t cmd_byte = lsd_u8(ctx, 0);
+		uint8_t len_byte = lsd_u8(ctx, 1);
 		
 		if(len_byte == 0)
 		{
@@ -586,27 +633,26 @@ static void lsd_decode_range(lsd_ctx* ctx, u32 offset_start, u32 offset_end)
 		
 		lsd_command* command = command_lookup(cmd_byte);
 		
+		if(command == NULL)
+		{
+			lsd_dec_unhandled(ctx);
+			goto next;
+		}
+		
 		if(command->indent == LSD_TAB_CLOSE)
 		{
 			lsd_adjust_indent(ctx, -1); //this crashes?
 		}
 		
-		if(command != NULL)
+		lsd_print_indent(ctx);
+		lsd_printf(ctx, "%-20s", command->name);
+		
+		if(command->args != NULL)
 		{
-			lsd_print_indent(ctx);
-			lsd_printf(ctx, "%-20s", command->name);
-			
-			if(command->args != NULL)
-			{
-				lsd_decode_args(ctx, command->args);
-			}
-			
-			lsd_printf(ctx, "\n");
+			lsd_decode_args(ctx, command->args);
 		}
-		else
-		{
-			lsd_dec_unhandled(ctx);
-		}
+		
+		lsd_printf(ctx, "\n");
 		
 		if(command->indent == LSD_TAB_OPEN)
 		{
@@ -618,13 +664,15 @@ static void lsd_decode_range(lsd_ctx* ctx, u32 offset_start, u32 offset_end)
 			lsd_collect_jump(ctx);
 		}
 		
+		next:
 		ctx->offset += len_byte;
 	}
 }
 
+
 ////////// Lookup implementations
 
-static lsd_command* command_lookup(u8 cmd_byte)
+static lsd_command* command_lookup(uint8_t cmd_byte)
 {
 	for(int i = 0; cmd_list[i].name != NULL; i++)
 	{
@@ -636,7 +684,7 @@ static lsd_command* command_lookup(u8 cmd_byte)
 	return NULL;
 }
 
-static lsd_label* label_lookup(lsd_label* labelset, u32 value)
+static lsd_label* label_lookup(lsd_label* labelset, uint32_t value)
 {
 	for(int i = 0; labelset[i].name; i++)
 	{
@@ -650,31 +698,31 @@ static lsd_label* label_lookup(lsd_label* labelset, u32 value)
 
 ////////// Fetch implementations
 
-static u8 lsd_u8(lsd_ctx* ctx, u32 rel_offset)
+static uint8_t lsd_u8(lsd_ctx* ctx, uint32_t rel_offset)
 {
 	return ctx->rom[ctx->offset + rel_offset];
 }
 
-static u16 lsd_u16(lsd_ctx* ctx, u32 rel_offset)
+static uint16_t lsd_u16(lsd_ctx* ctx, uint32_t rel_offset)
 {
-	u16 ret = U16BE(&ctx->rom[ctx->offset + rel_offset]);
+	uint16_t ret = U16BE(&ctx->rom[ctx->offset + rel_offset]);
 	return ret;
 }
 
-static u32 lsd_u32(lsd_ctx* ctx, u32 rel_offset)
+static uint32_t lsd_u32(lsd_ctx* ctx, uint32_t rel_offset)
 {
-	u32 ret = U32BE(&ctx->rom[ctx->offset + rel_offset]);
+	uint32_t ret = U32BE(&ctx->rom[ctx->offset + rel_offset]);
 	return ret;
 }
 
 ////////// Printing implementation
 
-static int lsd_printf(lsd_ctx* ctx, const char* fmt, ...)
+int lsd_printf(lsd_ctx* ctx, const char* fmt, ...)
 {
 	va_list valist;
 	va_start(valist, fmt);
 
-	u32 len = vsnprintf(NULL, 0, fmt, valist);
+	uint32_t len = vsnprintf(NULL, 0, fmt, valist) + 1;
 	
 	if(ctx->config & LSD_CFG_VERBOSE)
 	{
